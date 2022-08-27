@@ -1,0 +1,11 @@
+DiscUsage
+=========
+
+29-Mar-2007
+~~~~~~~~~~~
+Convert to using tasks.
+
+01-Dec-2005
+~~~~~~~~~~~
+Make columns sortable, replace path column with ratio.
+Show a busy window while scanning.

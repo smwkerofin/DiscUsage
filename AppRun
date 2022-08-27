@@ -1,0 +1,324 @@
+#!/usr/bin/env python
+
+import os, sys
+
+import findrox; findrox.version(2, 0, 2)
+import rox, rox.filer, rox.tasks
+
+quant=('B', 'KB', 'MB', 'GB', 'TB')
+def fmt_size(size):
+    i=0
+    while size>(4<<10) and i<len(quant)-1:
+        i+=1
+        size=size>>10
+
+    return '%d %s' % (size, quant[i])
+
+class Dir:
+    def __init__(self, name, size, parent=None):
+        #print name, size
+        name=os.path.normpath(name)
+        #print name, size
+        self.path=name
+        self.name=os.path.basename(name)
+        self.size=size
+        self.sub={}
+        self.parent=parent
+
+        #print self.name
+
+    def add(self, sub, size):
+        print self.name, sub, size
+        if os.path.dirname(sub)==self.path:
+            self.sub[os.path.basename(sub)]=Dir(sub, size, self)
+
+        else:
+            d=sub
+            x=16
+            while os.path.dirname(d)!=self.path:
+                print d
+                d=os.path.dirname(d)
+                x-=1
+                if x<=0:
+                    raise Exception('oops')
+
+            b=os.path.basename(d)
+            #print d, b
+            self.sub[b].add(sub, size)
+            
+    def getName(self):
+        return self.name
+    
+    def getPath(self):
+        return self.path
+    
+    def getSize(self):
+        return self.size
+    
+    def getSubSize(self):
+        size=0
+        for d, s in self.sub.iteritems():
+            size+=s.getSize()
+
+        return size
+
+    def getLocalSize(self):
+        return self.size-self.getSubSize()
+
+    def getSub(self):
+        return self.sub.itervalues()
+
+    def getParent(self):
+        return self.parent
+
+    def getParentSize(self):
+        p=self.getParent()
+        if p:
+            return p.getSize()
+        return 0
+
+    def getRatio(self):
+        ps=self.getParentSize()
+        if ps:
+            return float(self.getSize())/ps
+        return 1.
+
+    def __str__(self):
+        return '%d,%d,%s' % (self.size, self.getLocalSize(), self.path)
+
+class Usage:
+    def __init__(self, direct=None):
+        if not direct:
+            direct=os.getcwd()
+
+        self.direct=direct
+
+        self.f=os.popen('du -k %s' % self.direct, 'r')
+        self.running=True
+
+    def run(self, to_notify=None):
+        text=[]
+        while True:
+            inp=rox.tasks.InputBlocker(self.f.fileno())
+            yield inp
+
+            line=self.f.readline()
+            #print 'read', line.strip()
+            if line:
+                text.append(line)
+            else:
+                break
+
+        self.f.close()
+        self.f=None
+
+        fdir={}
+        for l in text:
+            #print l
+            l=l.strip()
+            #print l
+            p=l.find('\t')
+            e=p
+            while l[p]=='\t':
+                p+=1
+            size=int(l[:e])<<10
+            dir=l[p:]
+            #print size,dir
+            
+            #words=l.split()
+            #size=int(words[0])<<10
+            #dir=' '.join(words[1:])
+
+            fdir[dir]=size
+        #print 'done text'
+
+        keys=fdir.keys()
+        def shortest(x, y):
+            if len(x)<len(y):
+                return -1
+            elif len(x)>len(y):
+                return 1
+            return 0
+        keys.sort(shortest)
+        #print keys
+
+        #print 'first key', keys[0]
+        self.dirs=Dir(keys[0], fdir[keys[0]])
+        #print self.dirs
+        for d in keys[1:]:
+            #print d
+            self.dirs.add(d, fdir[d])
+        #print 'done keys'
+
+        self.running=False
+        if to_notify:
+            to_notify.scan_done()
+
+        #print 'done running'
+
+    def getRoot(self):
+        return self.dirs
+
+NAME=0
+TOTAL=1
+LOCAL=2
+PATH=3
+USAGE=4
+TOTAL_V=5
+LOCAL_V=6
+RATIO=7
+
+class UsageWindow(rox.Window):
+    def __init__(self, direct=None):
+        rox.Window.__init__(self)
+        
+        if not direct:
+            direct=os.getcwd()
+        self.directory=direct
+
+        self.create_ui()
+
+        self.set_title(direct)
+        self.show()
+
+        self.scan_dirs(direct)
+
+    def rescan(self, *unused):
+        self.model.clear()
+        self.scan_dirs(self.directory)
+
+    def create_ui(self):
+        self.busy_cursor=rox.g.gdk.Cursor(rox.g.gdk.WATCH)
+        
+        self.set_default_size(400, 300)
+
+        vbox=rox.g.VBox()
+        self.add(vbox)
+
+        swin=rox.g.ScrolledWindow()
+        swin.set_border_width(4)
+        
+        swin.set_shadow_type(rox.g.SHADOW_IN)
+        vbox.pack_start(swin, True, True, 0)
+
+        self.model = rox.g.TreeStore(str, str, str, str, object, long, long, int)
+        view = rox.g.TreeView(self.model)
+        self.view = view
+        swin.add(view)
+        
+        cell = rox.g.CellRendererText()
+        column = rox.g.TreeViewColumn('Name', cell, text = NAME)
+        column.set_sort_column_id(NAME)
+        column.set_resizable(True)
+        view.append_column(column)
+
+        cell = rox.g.CellRendererText()
+        column = rox.g.TreeViewColumn('Total', cell, text = TOTAL)
+        column.set_sort_column_id(TOTAL_V)
+        column.set_resizable(True)
+        view.append_column(column)
+        
+        cell = rox.g.CellRendererText()
+        column = rox.g.TreeViewColumn('Local', cell, text = LOCAL)
+        column.set_sort_column_id(LOCAL_V)
+        column.set_resizable(True)
+        view.append_column(column)
+
+        if hasattr(rox.g, "CellRendererProgress"):
+            cell = rox.g.CellRendererProgress()
+            column = rox.g.TreeViewColumn('Ratio %', cell, value = RATIO)
+        else:
+            cell = rox.g.CellRendererText()
+            column = rox.g.TreeViewColumn('Ratio %', cell, text = RATIO)
+        column.set_resizable(True)
+        view.append_column(column)
+
+        view.connect('row-activated', self.activate_row)
+
+        bbox=rox.g.HButtonBox()
+        bbox.set_layout(rox.g.BUTTONBOX_END)
+        button=rox.g.Button(stock=rox.g.STOCK_REFRESH)
+        button.connect('clicked', self.rescan)
+        bbox.pack_start(button, False, False, 0)
+        vbox.pack_start(bbox, False, False, 0)
+        
+        vbox.show_all()
+
+    def scan_dirs(self, direct):
+        self.busy()
+        try:
+            self.usage=Usage(direct)
+        
+            self.task=rox.tasks.Task(self.usage.run(self))
+        except:
+            rox.report_exception()
+
+    def scan_done(self):
+        self.task=None
+        self.set_title(self.usage.getRoot().getPath())
+        self.update_model()
+       
+        self.busy(False)        
+
+    def busy(self, isbusy=True):
+        if isbusy:
+            self.set_sensitive(False)
+            self.window.set_cursor(self.busy_cursor)
+
+        else:
+            self.set_sensitive(True)
+            self.window.set_cursor(None)
+            
+        while rox.g.events_pending():
+            rox.g.main_iteration()
+
+    def update_model(self):
+        self.model.clear()
+
+        self.add_dir(None, self.usage.getRoot())
+                
+    def add_dir(self, parent_iter, usage):
+        iter=self.model.append(parent_iter)
+        s=int(usage.getSize()>>10)
+        l=int(usage.getLocalSize()>>10)
+        self.model.set(iter, TOTAL, fmt_size(usage.getSize()),
+                       NAME, usage.getName(),
+                       LOCAL, fmt_size(usage.getLocalSize()),
+                       PATH, usage.getPath(),
+                       USAGE, usage,
+                       TOTAL_V, s,
+                       LOCAL_V, l,
+                       RATIO, int(100*usage.getRatio()))
+
+        for sub in usage.getSub():
+            self.add_dir(iter, sub)
+
+    def activate_row(self, view, path, col, udata=None):
+        iter=self.model.get_iter(path)
+        path=self.model.get_value(iter, PATH)
+        rox.filer.open_dir(path)
+
+def test(dir):
+    u=Usage(dir)
+    print u.dirs
+    for d in u.dirs.getSub():
+        print d
+
+def main():
+    if len(sys.argv)>1:
+        for d in sys.argv[1:]:
+            w=UsageWindow(d)
+            w.show()
+    else:
+        w=UsageWindow()
+        w.show()
+
+    try:
+        rox.mainloop()
+    except:
+        rox.report_exception()
+    
+if __name__=='__main__':
+    #test('/home/stephen/tmp')
+    main()
+    

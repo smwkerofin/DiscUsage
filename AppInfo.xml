@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<AppInfo>
+  <About>
+    <Purpose>Display disc space usage</Purpose>
+    <Authors>Stephen Watson</Authors>
+    <License>GNU General Public License</License>
+    <Homepage>http://www.kerofin.demon.co.uk/rox/</Homepage>
+    <Version>0.1.0 (22 November 2005)</Version>
+  </About>
+<Summary>Display disc space usage of a directory.</Summary>
+</AppInfo>
